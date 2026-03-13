@@ -29,7 +29,11 @@ use rustc_trait_selection::traits::{
 use tracing::{debug, instrument};
 
 use super::potentially_plural_count;
+use crate::collect::ItemCtxt;
 use crate::errors::{LifetimesOrBoundsMismatchOnTrait, MethodShouldReturnFuture};
+use crate::hir_ty_lowering::{
+    HirTyLowerer, ImpliedBoundsContext, OverlappingAsssocItemConstraints, PredicateFilter,
+};
 
 pub(super) mod refine;
 
@@ -268,6 +272,10 @@ fn compare_method_predicate_entailment<'tcx>(
     // restrictive than the trait's method (and the impl itself).
     let impl_m_own_bounds = impl_m_predicates.instantiate_own_identity();
     for (predicate, span) in impl_m_own_bounds {
+        if tcx.features().associated_traits() && !impl_m_span.contains(span) {
+            continue;
+        }
+
         let normalize_cause = traits::ObligationCause::misc(span, impl_m_def_id);
         let predicate = ocx.normalize(&normalize_cause, param_env, predicate);
 
@@ -2308,7 +2316,162 @@ fn compare_impl_ty<'tcx>(
     compare_generic_param_kinds(tcx, impl_ty, trait_ty, false)?;
     check_region_bounds_on_impl_item(tcx, impl_ty, trait_ty, false)?;
     compare_type_predicate_entailment(tcx, impl_ty, trait_ty, impl_trait_ref)?;
+    if is_impl_associated_trait_placeholder_item(tcx, impl_ty) {
+        check_associated_trait_placeholder_bounds(tcx, trait_ty, impl_ty, impl_trait_ref)?;
+    }
     check_type_bounds(tcx, trait_ty, impl_ty, impl_trait_ref)
+}
+
+fn is_associated_trait_placeholder_item(tcx: TyCtxt<'_>, assoc_item: ty::AssocItem) -> bool {
+    match tcx.hir_node_by_def_id(assoc_item.def_id.expect_local()) {
+        hir::Node::TraitItem(hir::TraitItem {
+            kind: hir::TraitItemKind::Type(_, None),
+            defaultness,
+            ..
+        }) => defaultness.has_value(),
+        hir::Node::ImplItem(hir::ImplItem {
+            kind: hir::ImplItemKind::Type(ty),
+            impl_kind: hir::ImplItemImplKind::Trait { .. },
+            span,
+            ..
+        }) => matches!(ty.kind, hir::TyKind::TraitObject(..)) && ty.span == *span,
+        _ => false,
+    }
+}
+
+fn is_impl_associated_trait_placeholder_item(tcx: TyCtxt<'_>, assoc_item: ty::AssocItem) -> bool {
+    match tcx.hir_node_by_def_id(assoc_item.def_id.expect_local()) {
+        hir::Node::ImplItem(hir::ImplItem {
+            kind: hir::ImplItemKind::Type(ty),
+            impl_kind: hir::ImplItemImplKind::Trait { .. },
+            span,
+            ..
+        }) => matches!(ty.kind, hir::TyKind::TraitObject(..)) && ty.span == *span,
+        _ => false,
+    }
+}
+
+fn impl_associated_trait_placeholder_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    impl_ty: ty::AssocItem,
+    item_ty: Ty<'tcx>,
+) -> Vec<(ty::Clause<'tcx>, Span)> {
+    let impl_ty_def_id = impl_ty.def_id.expect_local();
+    let icx = ItemCtxt::new(tcx, impl_ty_def_id);
+
+    match tcx.hir_node_by_def_id(impl_ty_def_id) {
+        hir::Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Type(ty), span, .. }) => {
+            let hir::TyKind::TraitObject(bounds, tagged_lifetime) = ty.kind else {
+                return Vec::new();
+            };
+
+            let mut hir_bounds = Vec::with_capacity(bounds.len() + 1);
+            hir_bounds.extend(bounds.iter().copied().map(hir::GenericBound::Trait));
+            hir_bounds.push(hir::GenericBound::Outlives(tagged_lifetime.pointer()));
+            let hir_bounds = tcx.arena.alloc_slice(&hir_bounds);
+
+            let mut clauses = Vec::new();
+            icx.lowerer().lower_bounds(
+                item_ty,
+                hir_bounds.iter(),
+                &mut clauses,
+                ty::List::empty(),
+                PredicateFilter::All,
+                OverlappingAsssocItemConstraints::Allowed,
+            );
+            icx.lowerer().add_implicit_sizedness_bounds(
+                &mut clauses,
+                item_ty,
+                hir_bounds,
+                ImpliedBoundsContext::AssociatedTypeOrImplTrait,
+                *span,
+            );
+            icx.lowerer().add_default_traits(
+                &mut clauses,
+                item_ty,
+                hir_bounds,
+                ImpliedBoundsContext::AssociatedTypeOrImplTrait,
+                *span,
+            );
+            clauses
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn trait_associated_trait_placeholder_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    trait_ty: ty::AssocItem,
+    impl_ty: ty::AssocItem,
+    impl_trait_ref: ty::TraitRef<'tcx>,
+    item_ty: Ty<'tcx>,
+) -> Vec<(ty::Clause<'tcx>, Span)> {
+    let trait_to_impl_args = GenericArgs::identity_for_item(tcx, impl_ty.def_id).rebase_onto(
+        tcx,
+        impl_ty.container_id(tcx),
+        impl_trait_ref.args,
+    );
+    let projection_ty = Ty::new_projection_from_args(tcx, trait_ty.def_id, trait_to_impl_args);
+    tcx.explicit_item_bounds(trait_ty.def_id)
+        .iter_instantiated_copied(tcx, trait_to_impl_args)
+        .map(|(clause, span)| {
+            let clause = clause.fold_with(&mut BottomUpFolder {
+                tcx,
+                ty_op: |ty| if ty == projection_ty { item_ty } else { ty },
+                lt_op: |lt| lt,
+                ct_op: |ct| ct,
+            });
+            (clause, span)
+        })
+        .collect()
+}
+
+fn check_associated_trait_placeholder_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    trait_ty: ty::AssocItem,
+    impl_ty: ty::AssocItem,
+    impl_trait_ref: ty::TraitRef<'tcx>,
+) -> Result<(), ErrorGuaranteed> {
+    let impl_ty_def_id = impl_ty.def_id.expect_local();
+    let infcx = tcx.infer_ctxt().build(TypingMode::non_body_analysis());
+    let item_ty = Ty::new_placeholder(
+        tcx,
+        ty::PlaceholderType::new(
+            infcx.create_next_universe(),
+            ty::BoundTy { var: ty::BoundVar::ZERO, kind: ty::BoundTyKind::Anon },
+        ),
+    );
+    let impl_bounds = impl_associated_trait_placeholder_bounds(tcx, impl_ty, item_ty);
+
+    let impl_ty_span = match tcx.hir_node_by_def_id(impl_ty_def_id) {
+        hir::Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Type(ty), .. }) => ty.span,
+        item => span_bug!(
+            tcx.def_span(impl_ty_def_id),
+            "cannot call `check_associated_trait_placeholder_bounds` on item: {item:?}",
+        ),
+    };
+
+    let trait_bounds =
+        trait_associated_trait_placeholder_bounds(tcx, trait_ty, impl_ty, impl_trait_ref, item_ty);
+    let impl_bounds: FxIndexSet<_> =
+        util::elaborate(tcx, impl_bounds.iter().map(|(clause, _)| *clause)).collect();
+
+    if let Some((_, span)) =
+        trait_bounds.iter().find(|(trait_bound, _)| !impl_bounds.contains(trait_bound))
+    {
+        let trait_item_path = tcx.def_path_str(trait_ty.def_id);
+        let mut err = struct_span_code_err!(
+            tcx.dcx(),
+            impl_ty_span,
+            E0277,
+            "associated trait alias does not satisfy the bounds of `{trait_item_path}`"
+        );
+        err.span_label(impl_ty_span, "impl alias is missing a required bound");
+        err.span_note(*span, format!("required by this bound in `{trait_item_path}`"));
+        return Err(err.emit());
+    }
+
+    Ok(())
 }
 
 /// The equivalent of [compare_method_predicate_entailment], but for associated types
@@ -2456,6 +2619,10 @@ pub(super) fn check_type_bounds<'tcx>(
     impl_ty: ty::AssocItem,
     impl_trait_ref: ty::TraitRef<'tcx>,
 ) -> Result<(), ErrorGuaranteed> {
+    if is_associated_trait_placeholder_item(tcx, impl_ty) {
+        return Ok(());
+    }
+
     // Avoid bogus "type annotations needed `Foo: Bar`" errors on `impl Bar for Foo` in case
     // other `Foo` impls are incoherent.
     tcx.ensure_result().coherent_trait(impl_trait_ref.def_id)?;
@@ -2648,7 +2815,7 @@ fn param_env_with_gat_bounds<'tcx>(
 
         let mut bound_vars: smallvec::SmallVec<[ty::BoundVariableKind<'tcx>; 8]> =
             smallvec::SmallVec::with_capacity(tcx.generics_of(impl_ty.def_id).own_params.len());
-        // Extend the impl's identity args with late-bound GAT vars
+        // Extend the impl's identity args with late-bound GAT vars.
         let normalize_impl_ty_args = ty::GenericArgs::identity_for_item(tcx, container_id)
             .extend_to(tcx, impl_ty.def_id, |param, _| match param.kind {
                 GenericParamDefKind::Type { .. } => {

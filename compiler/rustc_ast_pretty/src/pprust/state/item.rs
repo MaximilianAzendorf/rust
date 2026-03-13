@@ -394,7 +394,13 @@ impl<'a> State<'a> {
                 let empty = item.attrs.is_empty() && items.is_empty();
                 self.bclose(item.span, empty, cb);
             }
-            ast::ItemKind::TraitAlias(box TraitAlias { constness, ident, generics, bounds }) => {
+            ast::ItemKind::TraitAlias(box TraitAlias {
+                constness,
+                ident,
+                generics,
+                has_value,
+                bounds,
+            }) => {
                 let (cb, ib) = self.head("");
                 self.print_visibility(&item.vis);
                 self.print_constness(*constness);
@@ -402,8 +408,12 @@ impl<'a> State<'a> {
                 self.print_ident(*ident);
                 self.print_generic_params(&generics.params);
                 self.nbsp();
-                if !bounds.is_empty() {
+                if *has_value {
                     self.word_nbsp("=");
+                } else if !bounds.is_empty() {
+                    self.word_nbsp(":");
+                }
+                if !bounds.is_empty() {
                     self.print_type_bounds(bounds);
                 }
                 self.print_where_clause(&generics.where_clause);
@@ -603,6 +613,30 @@ impl<'a> State<'a> {
                     *defaultness,
                     define_opaque.as_deref(),
                 );
+            }
+            ast::AssocItemKind::TraitAlias(box TraitAlias {
+                constness,
+                ident,
+                generics,
+                has_value,
+                bounds,
+            }) => {
+                self.print_visibility(vis);
+                self.print_constness(*constness);
+                self.word_nbsp("trait");
+                self.print_ident(*ident);
+                self.print_generic_params(&generics.params);
+                self.nbsp();
+                if *has_value {
+                    self.word_nbsp("=");
+                } else if !bounds.is_empty() {
+                    self.word_nbsp(":");
+                }
+                if !bounds.is_empty() {
+                    self.print_type_bounds(bounds);
+                }
+                self.print_where_clause(&generics.where_clause);
+                self.word(";");
             }
             ast::AssocItemKind::Type(box ast::TyAlias {
                 defaultness,

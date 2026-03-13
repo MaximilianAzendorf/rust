@@ -4141,7 +4141,13 @@ impl TraitRef<'_> {
     pub fn trait_def_id(&self) -> Option<DefId> {
         match self.path.res {
             Res::Def(DefKind::Trait | DefKind::TraitAlias, did) => Some(did),
+            // During the `associated_traits` experiment, placeholder forms like
+            // `Self::Assoc` can appear in trait-bound position before they are
+            // lowered into full trait predicates.
+            Res::Def(DefKind::AssocTy, _) => None,
             Res::Err => None,
+            // During error recovery, invalid trait bounds can still be represented in HIR.
+            Res::Def(.., _) => None,
             res => panic!("{res:?} did not resolve to a trait or trait alias"),
         }
     }

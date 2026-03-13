@@ -1,0 +1,9 @@
+error[E0404]: expected trait, found builtin type `u32`
+  --> $DIR/trait-nontrait-rhs.rs:5:17
+   |
+LL |     trait Arg = u32;
+   |                 ^^^ not a trait
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0404`.

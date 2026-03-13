@@ -501,14 +501,6 @@ LL |     default trait foo = Ord;
    |
    = note: only associated `fn`, `const`, and `type` items can be `default`
 
-error: trait alias is not supported in `trait`s or `impl`s
-  --> $DIR/default-on-wrong-item-kind.rs:91:5
-   |
-LL |     default trait foo = Ord;
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = help: consider moving the trait alias out to a nearby module scope
-
 error: inherent impls cannot be default
   --> $DIR/default-on-wrong-item-kind.rs:93:18
    |
@@ -725,14 +717,6 @@ LL |     default trait foo = Ord;
    |
    = note: only associated `fn`, `const`, and `type` items can be `default`
 
-error: trait alias is not supported in `trait`s or `impl`s
-  --> $DIR/default-on-wrong-item-kind.rs:128:5
-   |
-LL |     default trait foo = Ord;
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = help: consider moving the trait alias out to a nearby module scope
-
 error: inherent impls cannot be default
   --> $DIR/default-on-wrong-item-kind.rs:130:18
    |
@@ -799,5 +783,26 @@ LL |     default macro_rules! foo {}
    |
    = help: consider moving the macro definition out to a nearby module scope
 
+error[E0658]: associated traits are experimental
+  --> $DIR/default-on-wrong-item-kind.rs:91:5
+   |
+LL |     default trait foo = Ord;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: see issue #2190 <https://github.com/rust-lang/rust/issues/2190> for more information
+   = help: add `#![feature(associated_traits)]` to the crate attributes to enable
+   = note: this compiler was built on YYYY-MM-DD; consider upgrading it if it is out of date
+
+error[E0658]: associated traits are experimental
+  --> $DIR/default-on-wrong-item-kind.rs:128:5
+   |
+LL |     default trait foo = Ord;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: see issue #2190 <https://github.com/rust-lang/rust/issues/2190> for more information
+   = help: add `#![feature(associated_traits)]` to the crate attributes to enable
+   = note: this compiler was built on YYYY-MM-DD; consider upgrading it if it is out of date
+
 error: aborting due to 99 previous errors
 
+For more information about this error, try `rustc --explain E0658`.

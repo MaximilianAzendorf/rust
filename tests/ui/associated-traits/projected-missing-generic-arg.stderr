@@ -1,0 +1,19 @@
+error[E0107]: missing generics for associated type `Handler::Arg`
+  --> $DIR/projected-missing-generic-arg.rs:12:55
+   |
+LL | fn use_handler<H: Handler>(_arg: impl <H as Handler>::Arg) {}
+   |                                                       ^^^ expected 1 generic argument
+   |
+note: associated type defined here, with 1 generic parameter: `T`
+  --> $DIR/projected-missing-generic-arg.rs:5:11
+   |
+LL |     trait Arg<T>;
+   |           ^^^ -
+help: add missing generic argument
+   |
+LL | fn use_handler<H: Handler>(_arg: impl <H as Handler>::Arg<T>) {}
+   |                                                          +++
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0107`.

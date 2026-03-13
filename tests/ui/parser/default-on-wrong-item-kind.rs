@@ -89,7 +89,7 @@ impl S {
     default trait foo {} //~ ERROR a trait cannot be `default`
     //~^ ERROR trait is not supported in `trait`s or `impl`s
     default trait foo = Ord; //~ ERROR a trait alias cannot be `default`
-    //~^ ERROR trait alias is not supported in `trait`s or `impl`s
+    //~^ ERROR associated traits are experimental
     default impl foo {} //~ ERROR inherent impls cannot be default
     //~^ ERROR implementation is not supported in `trait`s or `impl`s
     default!();
@@ -126,7 +126,7 @@ trait T {
     default trait foo {} //~ ERROR a trait cannot be `default`
     //~^ ERROR trait is not supported in `trait`s or `impl`s
     default trait foo = Ord; //~ ERROR a trait alias cannot be `default`
-    //~^ ERROR trait alias is not supported in `trait`s or `impl`s
+    //~^ ERROR associated traits are experimental
     default impl foo {} //~ ERROR inherent impls cannot be default
     //~^ ERROR implementation is not supported in `trait`s or `impl`s
     default!();

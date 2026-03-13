@@ -1091,6 +1091,7 @@ impl<'a> Parser<'a> {
     /// Can the current token begin a bound?
     fn can_begin_bound(&mut self) -> bool {
         self.check_path()
+            || self.check(exp!(Lt))
             || self.check_lifetime()
             || self.check(exp!(Bang))
             || self.check(exp!(Question))
@@ -1353,8 +1354,22 @@ impl<'a> Parser<'a> {
             && let Some(path) = self.recover_path_from_fn()
         {
             path
-        } else if !self.token.is_path_start() && self.token.can_begin_type() {
+        } else if self.check(exp!(Lt))
+            || (!self.token.is_path_start() && self.token.can_begin_type())
+        {
             let ty = self.parse_ty_no_plus()?;
+            if let TyKind::Path(Some(_), path) = &ty.kind {
+                // Accept qpath-style bounds like `<T as Trait>::Assoc` for the
+                // associated-traits experiment.
+                self.psess.gated_spans.gate(sym::associated_traits, ty.span);
+                return Ok(GenericBound::Trait(PolyTraitRef::new(
+                    bound_vars,
+                    path.clone(),
+                    modifiers,
+                    lo.to(self.prev_token.span),
+                    parens,
+                )));
+            }
             // Instead of finding a path (a trait), we found a type.
             let mut err = self.dcx().struct_span_err(ty.span, "expected a trait, found type");
 

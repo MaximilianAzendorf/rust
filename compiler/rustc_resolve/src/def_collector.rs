@@ -357,6 +357,7 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
                     is_type_const: matches!(rhs_kind, ConstItemRhsKind::TypeConst { .. }),
                 },
             ),
+            AssocItemKind::TraitAlias(box TraitAlias { ident, .. }) => (*ident, DefKind::AssocTy),
             AssocItemKind::Type(box TyAlias { ident, .. }) => (*ident, DefKind::AssocTy),
             AssocItemKind::MacCall(..) => {
                 return self.visit_macro_invoc(i.id);

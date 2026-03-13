@@ -481,15 +481,18 @@ pub fn eq_item_kind(l: &ItemKind, r: &ItemKind) -> bool {
                 generics: lg,
                 bounds: lb,
                 constness: lc,
+                has_value: lhv,
             }),
             TraitAlias(box ast::TraitAlias {
                 ident: ri,
                 generics: rg,
                 bounds: rb,
                 constness: rc,
+                has_value: rhv,
             }),
         ) => {
             matches!(lc, ast::Const::No) == matches!(rc, ast::Const::No)
+                && lhv == rhv
                 && eq_id(*li, *ri)
                 && eq_generics(lg, rg)
                 && over(lb, rb, eq_generic_bound)

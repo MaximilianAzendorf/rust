@@ -38,8 +38,9 @@ use rustc_macros::{TypeFoldable, TypeVisitable};
 use rustc_middle::middle::stability::AllowUnstable;
 use rustc_middle::ty::print::PrintPolyTraitRefExt as _;
 use rustc_middle::ty::{
-    self, Const, GenericArgKind, GenericArgsRef, GenericParamDefKind, LitToConstInput, Ty, TyCtxt,
-    TypeSuperFoldable, TypeVisitableExt, TypingMode, Upcast, const_lit_matches_ty, fold_regions,
+    self, BottomUpFolder, Const, GenericArgKind, GenericArgsRef, GenericParamDefKind,
+    LitToConstInput, Ty, TyCtxt, TypeFoldable, TypeSuperFoldable, TypeVisitableExt, TypingMode,
+    Upcast, const_lit_matches_ty, fold_regions,
 };
 use rustc_middle::{bug, span_bug};
 use rustc_session::lint::builtin::AMBIGUOUS_ASSOCIATED_ITEMS;
@@ -51,6 +52,7 @@ use rustc_trait_selection::traits::{self, FulfillmentError};
 use tracing::{debug, instrument};
 
 use crate::check::check_abi;
+use crate::collect::ItemCtxt;
 use crate::errors::{AmbiguousLifetimeBound, BadReturnTypeNotation, NoFieldOnType};
 use crate::hir_ty_lowering::errors::{GenericsArgsErrExtend, prohibit_assoc_item_constraint};
 use crate::hir_ty_lowering::generics::{check_generic_arg_count, lower_generic_args};
@@ -898,6 +900,26 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         // We use the *resolved* bound vars later instead of the HIR ones since the former
         // also include the bound vars of the overarching predicate if applicable.
         let _ = bound_generic_params;
+
+        if let Res::Def(DefKind::AssocTy, def_id) = trait_ref.path.res
+            && self.tcx().features().associated_traits()
+        {
+            if let Some(local_def_id) = def_id.as_local() {
+                self.lower_local_associated_trait_bounds(
+                    self_ty,
+                    local_def_id,
+                    trait_ref.path.segments.last().unwrap(),
+                    bounds,
+                    predicate_filter,
+                    overlapping_assoc_item_constraints,
+                );
+            }
+
+            return GenericArgCountResult {
+                explicit_late_bound: ExplicitLateBound::No,
+                correct: Ok(()),
+            };
+        }
 
         let trait_def_id = trait_ref.trait_def_id().unwrap_or_else(|| FatalError.raise());
 
@@ -1988,6 +2010,87 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             self.lower_generic_args_of_assoc_item(span, item_def_id, item_segment, trait_ref.args);
 
         Ok((item_def_id, item_args))
+    }
+
+    fn associated_trait_item_args(
+        &self,
+        self_ty: Ty<'tcx>,
+        item_def_id: DefId,
+        item_segment: &hir::PathSegment<'tcx>,
+    ) -> GenericArgsRef<'tcx> {
+        let tcx = self.tcx();
+        let parent_args = ty::GenericArgs::for_item(tcx, tcx.parent(item_def_id), |param, _| {
+            if param.name == kw::SelfUpper { self_ty.into() } else { tcx.mk_param_from_def(param) }
+        });
+        self.lower_generic_args_of_assoc_item(
+            item_segment.ident.span,
+            item_def_id,
+            item_segment,
+            parent_args,
+        )
+    }
+
+    fn lower_local_associated_trait_bounds(
+        &self,
+        self_ty: Ty<'tcx>,
+        item_def_id: LocalDefId,
+        item_segment: &hir::PathSegment<'tcx>,
+        bounds: &mut Vec<(ty::Clause<'tcx>, Span)>,
+        predicate_filter: PredicateFilter,
+        overlapping_assoc_item_constraints: OverlappingAsssocItemConstraints,
+    ) {
+        let tcx = self.tcx();
+        let item_def_id = item_def_id.to_def_id();
+        let item_args = self.associated_trait_item_args(self_ty, item_def_id, item_segment);
+        let identity_item_ty = Ty::new_projection_from_args(
+            tcx,
+            item_def_id,
+            ty::GenericArgs::identity_for_item(tcx, item_def_id),
+        );
+        let concrete_item_ty = Ty::new_projection_from_args(tcx, item_def_id, item_args);
+
+        let mut item_bounds = Vec::new();
+        let icx = ItemCtxt::new(tcx, item_def_id.expect_local());
+        match tcx.hir_node_by_def_id(item_def_id.expect_local()) {
+            hir::Node::TraitItem(hir::TraitItem {
+                kind: hir::TraitItemKind::Type(assoc_bounds, _),
+                ..
+            }) => {
+                icx.lowerer().lower_bounds(
+                    identity_item_ty,
+                    assoc_bounds.iter(),
+                    &mut item_bounds,
+                    ty::List::empty(),
+                    predicate_filter,
+                    overlapping_assoc_item_constraints,
+                );
+            }
+            hir::Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Type(ty), .. }) => {
+                if let hir::TyKind::TraitObject(assoc_bounds, _) = ty.kind {
+                    for &assoc_bound in assoc_bounds {
+                        let _ = icx.lowerer().lower_poly_trait_ref(
+                            &assoc_bound,
+                            identity_item_ty,
+                            &mut item_bounds,
+                            predicate_filter,
+                            overlapping_assoc_item_constraints,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        for (clause, span) in item_bounds {
+            let clause = ty::EarlyBinder::bind(clause).instantiate(tcx, item_args);
+            let clause = clause.fold_with(&mut BottomUpFolder {
+                tcx,
+                ty_op: |ty| if ty == concrete_item_ty { self_ty } else { ty },
+                lt_op: |lt| lt,
+                ct_op: |ct| ct,
+            });
+            bounds.push((clause, span));
+        }
     }
 
     pub fn prohibit_generic_args<'a>(

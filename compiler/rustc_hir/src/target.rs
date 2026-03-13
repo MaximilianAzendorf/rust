@@ -249,6 +249,7 @@ impl Target {
                     }
                 }
             }),
+            AssocItemKind::TraitAlias(_) => Target::TraitAlias,
             AssocItemKind::Type(_) => Target::AssocTy,
             AssocItemKind::Delegation(_) => Target::Delegation { mac: false },
             AssocItemKind::DelegationMac(_) => Target::Delegation { mac: true },

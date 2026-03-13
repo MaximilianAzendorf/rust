@@ -1,0 +1,12 @@
+error[E0195]: lifetime parameters or bounds on associated type `Ref` do not match the trait declaration
+  --> $DIR/impl-lifetime-param-mismatch.rs:9:14
+   |
+LL |     trait Ref<'a>;
+   |              ---- lifetimes in impl do not match this associated type in trait
+...
+LL |     trait Ref = Copy;
+   |              ^ lifetimes do not match associated type in trait
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0195`.

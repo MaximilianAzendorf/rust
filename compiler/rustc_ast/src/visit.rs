@@ -849,7 +849,13 @@ macro_rules! common_visitor_and_walkers {
                         visit_visitable!($($mut)? vis, impl_),
                     ItemKind::Trait(trait_) =>
                         visit_visitable!($($mut)? vis, trait_),
-                    ItemKind::TraitAlias(box TraitAlias { constness, ident, generics, bounds}) => {
+                    ItemKind::TraitAlias(box TraitAlias {
+                        constness,
+                        ident,
+                        generics,
+                        has_value: _,
+                        bounds,
+                    }) => {
                         visit_visitable!($($mut)? vis, constness, ident, generics);
                         visit_visitable_with!($($mut)? vis, bounds, BoundKind::Bound)
                     }
@@ -883,6 +889,16 @@ macro_rules! common_visitor_and_walkers {
                     AssocItemKind::Fn(func) => {
                         let kind = FnKind::Fn(FnCtxt::Assoc(ctxt), visibility, &$($mut)? *func);
                         try_visit!(vis.visit_fn(kind, attrs, span, id))
+                    }
+                    AssocItemKind::TraitAlias(box TraitAlias {
+                        constness,
+                        ident,
+                        generics,
+                        has_value: _,
+                        bounds,
+                    }) => {
+                        visit_visitable!($($mut)? vis, constness, ident, generics);
+                        visit_visitable_with!($($mut)? vis, bounds, BoundKind::Bound)
                     }
                     AssocItemKind::Type(alias) =>
                         visit_visitable!($($mut)? vis, alias),

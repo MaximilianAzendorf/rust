@@ -279,7 +279,7 @@ impl<'a> Parser<'a> {
             self.parse_static_item(safety, mutability)?
         } else if self.check_keyword_case(exp!(Trait), case) || self.check_trait_front_matter() {
             // TRAIT ITEM
-            self.parse_item_trait(attrs, lo)?
+            self.parse_item_trait(attrs, lo, fn_parse_mode.context)?
         } else if self.check_impl_frontmatter(0) {
             // IMPL ITEM
             self.parse_item_impl(attrs, def_(), false)?
@@ -1098,7 +1098,13 @@ impl<'a> Parser<'a> {
     /// However, whether the restriction should be grouped closer to the visibility modifier
     /// (e.g., `pub impl(crate) const unsafe auto trait`) remains an unresolved design question.
     /// This ordering must be kept in sync with the logic in `check_trait_front_matter`.
-    fn parse_item_trait(&mut self, attrs: &mut AttrVec, lo: Span) -> PResult<'a, ItemKind> {
+    fn parse_item_trait(
+        &mut self,
+        attrs: &mut AttrVec,
+        lo: Span,
+        fn_context: FnContext,
+    ) -> PResult<'a, ItemKind> {
+        let in_assoc_item_context = matches!(fn_context, FnContext::Trait | FnContext::Impl);
         let constness = self.parse_constness(Case::Sensitive);
         if let Const::Yes(span) = constness {
             self.psess.gated_spans.gate(sym::const_trait_impl, span);
@@ -1146,23 +1152,58 @@ impl<'a> Parser<'a> {
                 self.dcx().emit_err(errors::TraitAliasCannotBeImplRestricted { span: whole_span });
             }
 
-            self.psess.gated_spans.gate(sym::trait_alias, whole_span);
+            self.psess.gated_spans.gate(
+                if in_assoc_item_context { sym::associated_traits } else { sym::trait_alias },
+                whole_span,
+            );
 
-            Ok(ItemKind::TraitAlias(Box::new(TraitAlias { constness, ident, generics, bounds })))
-        } else {
-            // It's a normal trait.
-            generics.where_clause = self.parse_where_clause()?;
-            let items = self.parse_item_list(attrs, |p| p.parse_trait_item(ForceCollect::No))?;
-            Ok(ItemKind::Trait(Box::new(Trait {
+            Ok(ItemKind::TraitAlias(Box::new(TraitAlias {
                 constness,
-                is_auto,
-                safety,
-                impl_restriction,
                 ident,
                 generics,
+                has_value: true,
                 bounds,
-                items,
             })))
+        } else {
+            generics.where_clause = self.parse_where_clause()?;
+            if in_assoc_item_context && self.eat(exp!(Semi)) {
+                // It's an associated trait declaration.
+                let whole_span = lo.to(self.prev_token.span);
+                if is_auto == IsAuto::Yes {
+                    self.dcx().emit_err(errors::TraitAliasCannotBeAuto { span: whole_span });
+                }
+                if let Safety::Unsafe(_) = safety {
+                    self.dcx().emit_err(errors::TraitAliasCannotBeUnsafe { span: whole_span });
+                }
+                if let RestrictionKind::Restricted { .. } = impl_restriction.kind {
+                    self.dcx()
+                        .emit_err(errors::TraitAliasCannotBeImplRestricted { span: whole_span });
+                }
+
+                self.psess.gated_spans.gate(sym::associated_traits, whole_span);
+
+                Ok(ItemKind::TraitAlias(Box::new(TraitAlias {
+                    constness,
+                    ident,
+                    generics,
+                    has_value: false,
+                    bounds,
+                })))
+            } else {
+                // It's a normal trait.
+                let items =
+                    self.parse_item_list(attrs, |p| p.parse_trait_item(ForceCollect::No))?;
+                Ok(ItemKind::Trait(Box::new(Trait {
+                    constness,
+                    is_auto,
+                    safety,
+                    impl_restriction,
+                    ident,
+                    generics,
+                    bounds,
+                    items,
+                })))
+            }
         }
     }
 

@@ -46,7 +46,8 @@ use rustc_data_structures::sorted_map::SortedMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::spawn;
 use rustc_data_structures::tagged_ptr::TaggedRef;
-use rustc_errors::{DiagArgFromDisplay, DiagCtxtHandle};
+use rustc_errors::codes::E0576;
+use rustc_errors::{DiagArgFromDisplay, DiagCtxtHandle, struct_span_code_err};
 use rustc_hir::def::{DefKind, LifetimeRes, Namespace, PartialRes, PerNS, Res};
 use rustc_hir::def_id::{CRATE_DEF_ID, LOCAL_CRATE, LocalDefId};
 use rustc_hir::definitions::{DefPathData, DisambiguatorState};
@@ -2111,6 +2112,59 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         p: &TraitRef,
         itctx: ImplTraitContext,
     ) -> hir::TraitRef<'hir> {
+        if self.tcx.features().associated_traits()
+            && let Some(segment) = p.path.segments.last()
+            && let full_res = self.expect_full_res(segment.id)
+            && matches!(full_res, Res::Def(DefKind::AssocTy, _) | Res::Err)
+        {
+            if matches!(full_res, Res::Err) {
+                let trait_name = p.path.segments.first().and_then(|segment| {
+                    match self.expect_full_res(segment.id) {
+                        Res::SelfTyParam { trait_ } => Some(self.tcx.item_name(trait_)),
+                        Res::Def(DefKind::Trait, trait_) => Some(self.tcx.item_name(trait_)),
+                        _ => None,
+                    }
+                });
+                let mut err = if let Some(trait_name) = trait_name {
+                    struct_span_code_err!(
+                        self.dcx(),
+                        p.path.span,
+                        E0576,
+                        "cannot find associated trait `{}` in trait `{}`",
+                        segment.ident,
+                        trait_name,
+                    )
+                } else {
+                    struct_span_code_err!(
+                        self.dcx(),
+                        p.path.span,
+                        E0576,
+                        "cannot find associated trait `{}`",
+                        segment.ident,
+                    )
+                };
+                err.span_label(p.path.span, "unknown associated trait");
+                err.emit();
+            }
+
+            let lowered_segment = self.lower_path_segment(
+                p.path.span,
+                segment,
+                ParamMode::Explicit,
+                GenericArgsMode::Err,
+                itctx,
+                None,
+            );
+            let res =
+                if matches!(full_res, Res::Err) { Res::Err } else { self.lower_res(full_res) };
+            let path = self.arena.alloc(hir::Path {
+                span: self.lower_span(p.path.span),
+                res,
+                segments: self.arena.alloc_from_iter([lowered_segment]),
+            });
+            return hir::TraitRef { path, hir_ref_id: self.lower_node_id(p.ref_id) };
+        }
+
         let path = match self.lower_qpath(
             p.ref_id,
             &None,

@@ -1003,12 +1003,16 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
             span,
             |this| {
                 this.visit_generic_params(&tref.bound_generic_params, false);
-                this.smart_resolve_path(
-                    tref.trait_ref.ref_id,
-                    &None,
-                    &tref.trait_ref.path,
-                    PathSource::Trait(AliasPossibility::Maybe),
-                );
+                let source = if this.r.tcx.features().associated_traits()
+                    && tref.trait_ref.path.segments.len() > 1
+                {
+                    // Allow associated-trait placeholders in trait-bound position for the
+                    // `associated_traits` experiment (e.g. `Self::Assoc` or `Trait::Assoc`).
+                    PathSource::Type
+                } else {
+                    PathSource::Trait(AliasPossibility::Maybe)
+                };
+                this.smart_resolve_path(tref.trait_ref.ref_id, &None, &tref.trait_ref.path, source);
                 this.visit_trait_ref(&tref.trait_ref);
             },
         );
@@ -3338,6 +3342,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         |this| this.resolve_delegation(delegation, item.id, false, &item.attrs),
                     );
                 }
+                AssocItemKind::TraitAlias(box TraitAlias { generics, .. }) => self
+                    .with_lifetime_rib(LifetimeRibKind::AnonymousReportError, |this| {
+                        walk_assoc_item(this, generics, LifetimeBinderKind::Item, item)
+                    }),
                 AssocItemKind::Type(box TyAlias { generics, .. }) => self
                     .with_lifetime_rib(LifetimeRibKind::AnonymousReportError, |this| {
                         walk_assoc_item(this, generics, LifetimeBinderKind::Item, item)
@@ -3461,10 +3469,16 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                                         this.with_current_self_type(self_type, |this| {
                                             this.with_self_rib_ns(ValueNS, Res::SelfCtor(item_def_id), |this| {
                                                 debug!("resolve_implementation with_self_rib_ns(ValueNS, ...)");
+                                                let original_trait_assoc_items = replace(
+                                                    &mut this.diag_metadata.current_trait_assoc_items,
+                                                    Some(impl_items),
+                                                );
                                                 let mut seen_trait_items = Default::default();
                                                 for item in impl_items {
                                                     this.resolve_impl_item(&**item, &mut seen_trait_items, trait_id, of_trait.is_some());
                                                 }
+                                                this.diag_metadata.current_trait_assoc_items =
+                                                    original_trait_assoc_items;
                                             });
                                         });
                                     });
@@ -3597,6 +3611,33 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 );
 
                 self.resolve_define_opaques(define_opaque);
+            }
+            AssocItemKind::TraitAlias(box TraitAlias { ident, generics, .. }) => {
+                self.diag_metadata.in_non_gat_assoc_type = Some(generics.params.is_empty());
+                debug!("resolve_implementation AssocItemKind::TraitAlias");
+                self.with_generic_param_rib(
+                    &generics.params,
+                    RibKind::AssocItem,
+                    item.id,
+                    LifetimeBinderKind::ImplAssocType,
+                    generics.span,
+                    |this| {
+                        this.with_lifetime_rib(LifetimeRibKind::AnonymousReportError, |this| {
+                            this.check_trait_item(
+                                item.id,
+                                *ident,
+                                &item.kind,
+                                TypeNS,
+                                item.span,
+                                seen_trait_items,
+                                |i, s, c| TypeNotMemberOfTrait(i, s, c),
+                            );
+
+                            visit::walk_assoc_item(this, item, AssocCtxt::Impl { of_trait: true })
+                        });
+                    },
+                );
+                self.diag_metadata.in_non_gat_assoc_type = None;
             }
             AssocItemKind::Type(box TyAlias { ident, generics, .. }) => {
                 self.diag_metadata.in_non_gat_assoc_type = Some(generics.params.is_empty());
@@ -3740,6 +3781,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
         match (def_kind, kind) {
             (DefKind::AssocTy, AssocItemKind::Type(..))
+            | (DefKind::AssocTy, AssocItemKind::TraitAlias(..))
             | (DefKind::AssocFn, AssocItemKind::Fn(..))
             | (DefKind::AssocConst { .. }, AssocItemKind::Const(..))
             | (DefKind::AssocFn, AssocItemKind::Delegation(..)) => {
@@ -3754,6 +3796,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         let (code, kind) = match kind {
             AssocItemKind::Const(..) => (E0323, "const"),
             AssocItemKind::Fn(..) => (E0324, "method"),
+            AssocItemKind::TraitAlias(..) => (E0325, "type"),
             AssocItemKind::Type(..) => (E0325, "type"),
             AssocItemKind::Delegation(..) => (E0324, "method"),
             AssocItemKind::MacCall(..) | AssocItemKind::DelegationMac(..) => {
@@ -4637,33 +4680,137 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             }
 
             Ok(Some(partial_res)) if source.defer_to_typeck() => {
-                // Not fully resolved associated item `T::A::B` or `<T as Tr>::A::B`
-                // or `<T>::A::B`. If `B` should be resolved in value namespace then
-                // it needs to be added to the trait map.
-                if ns == ValueNS {
-                    let item_name = path.last().unwrap().ident;
-                    let traits = self.traits_in_scope(item_name, ns);
-                    self.r.trait_map.insert(node_id, traits);
-                }
+                // For `associated_traits`, eagerly resolve `Self::Assoc` in trait-bound position
+                // to the corresponding associated type item in the current trait.
+                if self.r.tcx.features().associated_traits()
+                    && matches!(source, PathSource::Type)
+                    && partial_res.unresolved_segments() == 1
+                    && path.len() == 2
+                    && path[0].ident.name == kw::SelfUpper
+                {
+                    let assoc_def_id = match partial_res.base_res() {
+                        Res::SelfTyParam { trait_: trait_def_id } => {
+                            if trait_def_id.is_local() {
+                                self.diag_metadata.current_trait_assoc_items.and_then(|items| {
+                                    items.iter().find_map(|item| {
+                                        if item.kind.ident() == Some(path[1].ident)
+                                            && matches!(
+                                                item.kind,
+                                                AssocItemKind::TraitAlias(_)
+                                                    | AssocItemKind::Type(_)
+                                            )
+                                        {
+                                            Some(self.r.local_def_id(item.id).to_def_id())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                            } else {
+                                self.r
+                                    .tcx
+                                    .associated_items(trait_def_id)
+                                    .find_by_ident_and_kind(
+                                        self.r.tcx,
+                                        path[1].ident,
+                                        AssocTag::Type,
+                                        trait_def_id,
+                                    )
+                                    .map(|item| item.def_id)
+                            }
+                        }
+                        Res::SelfTyAlias { is_trait_impl: true, .. } => self
+                            .diag_metadata
+                            .current_trait_assoc_items
+                            .and_then(|items| {
+                                items.iter().find_map(|item| {
+                                    if item.kind.ident() == Some(path[1].ident)
+                                        && matches!(
+                                            item.kind,
+                                            AssocItemKind::TraitAlias(_) | AssocItemKind::Type(_)
+                                        )
+                                    {
+                                        Some(self.r.local_def_id(item.id).to_def_id())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .or_else(|| {
+                                self.current_trait_ref.as_ref().and_then(|(module, _)| {
+                                    let trait_def_id = module.def_id();
+                                    if trait_def_id.is_local() {
+                                        self.r
+                                            .cm()
+                                            .maybe_resolve_ident_in_module(
+                                                ModuleOrUniformRoot::Module(*module),
+                                                path[1].ident,
+                                                TypeNS,
+                                                &self.parent_scope,
+                                                None,
+                                            )
+                                            .ok()
+                                            .and_then(|decl| match decl.res() {
+                                                Res::Def(DefKind::AssocTy, assoc_def_id) => {
+                                                    Some(assoc_def_id)
+                                                }
+                                                _ => None,
+                                            })
+                                    } else {
+                                        self.r
+                                            .tcx
+                                            .associated_items(trait_def_id)
+                                            .find_by_ident_and_kind(
+                                                self.r.tcx,
+                                                path[1].ident,
+                                                AssocTag::Type,
+                                                trait_def_id,
+                                            )
+                                            .map(|item| item.def_id)
+                                    }
+                                })
+                            }),
+                        _ => None,
+                    };
 
-                if PrimTy::from_name(path[0].ident.name).is_some() {
-                    let mut std_path = Vec::with_capacity(1 + path.len());
-
-                    std_path.push(Segment::from_ident(Ident::with_dummy_span(sym::std)));
-                    std_path.extend(path);
-                    if let PathResult::Module(_) | PathResult::NonModule(_) =
-                        self.resolve_path(&std_path, Some(ns), None, source)
-                    {
-                        // Check if we wrote `str::from_utf8` instead of `std::str::from_utf8`
-                        let item_span =
-                            path.iter().last().map_or(path_span, |segment| segment.ident.span);
-
-                        self.r.confused_type_with_std_module.insert(item_span, path_span);
-                        self.r.confused_type_with_std_module.insert(path_span, path_span);
+                    if let Some(assoc_def_id) = assoc_def_id {
+                        let assoc_res = Res::Def(DefKind::AssocTy, assoc_def_id);
+                        if let Some(id) = path[1].id {
+                            self.r.record_partial_res(id, PartialRes::new(assoc_res));
+                        }
+                        PartialRes::new(assoc_res)
+                    } else {
+                        partial_res
                     }
-                }
+                } else {
+                    // Not fully resolved associated item `T::A::B` or `<T as Tr>::A::B`
+                    // or `<T>::A::B`. If `B` should be resolved in value namespace then
+                    // it needs to be added to the trait map.
+                    if ns == ValueNS {
+                        let item_name = path.last().unwrap().ident;
+                        let traits = self.traits_in_scope(item_name, ns);
+                        self.r.trait_map.insert(node_id, traits);
+                    }
 
-                partial_res
+                    if PrimTy::from_name(path[0].ident.name).is_some() {
+                        let mut std_path = Vec::with_capacity(1 + path.len());
+
+                        std_path.push(Segment::from_ident(Ident::with_dummy_span(sym::std)));
+                        std_path.extend(path);
+                        if let PathResult::Module(_) | PathResult::NonModule(_) =
+                            self.resolve_path(&std_path, Some(ns), None, source)
+                        {
+                            // Check if we wrote `str::from_utf8` instead of `std::str::from_utf8`
+                            let item_span =
+                                path.iter().last().map_or(path_span, |segment| segment.ident.span);
+
+                            self.r.confused_type_with_std_module.insert(item_span, path_span);
+                            self.r.confused_type_with_std_module.insert(path_span, path_span);
+                        }
+                    }
+
+                    partial_res
+                }
             }
 
             Err(err) => {

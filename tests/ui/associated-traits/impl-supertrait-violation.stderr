@@ -1,0 +1,15 @@
+error[E0277]: associated trait alias does not satisfy the bounds of `Handler::Arg`
+  --> $DIR/impl-supertrait-violation.rs:9:5
+   |
+LL |     trait Arg = Clone;
+   |     ^^^^^^^^^^^^^^^^^^ impl alias is missing a required bound
+   |
+note: required by this bound in `Handler::Arg`
+  --> $DIR/impl-supertrait-violation.rs:5:16
+   |
+LL |     trait Arg: Copy;
+   |                ^^^^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0277`.

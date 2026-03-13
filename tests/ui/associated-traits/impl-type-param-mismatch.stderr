@@ -1,0 +1,12 @@
+error[E0049]: associated type `Arg` has 0 type parameters but its trait declaration has 1 type parameter
+  --> $DIR/impl-type-param-mismatch.rs:9:14
+   |
+LL |     trait Arg<T>;
+   |               - expected 1 type parameter
+...
+LL |     trait Arg = Copy;
+   |              ^ found 0 type parameters
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0049`.

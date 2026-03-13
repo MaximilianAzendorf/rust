@@ -1,0 +1,12 @@
+error[E0046]: not all trait items implemented, missing: `Arg`
+  --> $DIR/missing-impl-item.rs:12:1
+   |
+LL |     trait Arg;
+   |     --------- `Arg` from trait
+...
+LL | impl Handler for HandlerImpl {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Arg` in implementation
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0046`.

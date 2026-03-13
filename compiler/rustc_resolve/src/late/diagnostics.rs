@@ -325,6 +325,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             let generics = match &assoc.kind {
                 AssocItemKind::Const(box ast::ConstItem { generics, .. })
                 | AssocItemKind::Fn(box ast::Fn { generics, .. })
+                | AssocItemKind::TraitAlias(box ast::TraitAlias { generics, .. })
                 | AssocItemKind::Type(box ast::TyAlias { generics, .. }) => Some(generics),
                 AssocItemKind::Delegation(..)
                 | AssocItemKind::MacCall(..)
@@ -2792,6 +2793,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                             AssocSuggestion::MethodWithSelf { called }
                         }
                         ast::AssocItemKind::Fn(..) => AssocSuggestion::AssocFn { called },
+                        ast::AssocItemKind::TraitAlias(..) => AssocSuggestion::AssocType,
                         ast::AssocItemKind::Type(..) => AssocSuggestion::AssocType,
                         ast::AssocItemKind::Delegation(..)
                             if self

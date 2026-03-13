@@ -79,6 +79,10 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::EarlyBinder<'_
                 .unwrap_or_else(|| icx.lower_ty(ty)),
             TraitItemKind::Type(_, Some(ty)) => icx.lower_ty(ty),
             TraitItemKind::Type(_, None) => {
+                if item.defaultness.has_value() {
+                    return ty::EarlyBinder::bind(tcx.types.unit);
+                }
+
                 span_bug!(item.span, "associated type missing default");
             }
         },
@@ -106,6 +110,14 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::EarlyBinder<'_
             ImplItemKind::Type(ty) => {
                 if let ImplItemImplKind::Inherent { .. } = item.impl_kind {
                     check_feature_inherent_assoc_ty(tcx, item.span);
+                }
+
+                if tcx.features().associated_traits()
+                    && matches!(item.impl_kind, ImplItemImplKind::Trait { .. })
+                    && matches!(ty.kind, hir::TyKind::TraitObject(..))
+                    && ty.span == item.span
+                {
+                    return ty::EarlyBinder::bind(tcx.types.unit);
                 }
 
                 icx.lower_ty(ty)

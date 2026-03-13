@@ -1452,7 +1452,8 @@ impl<'a, 'ra, 'tcx> Visitor<'a> for BuildReducedGraphVisitor<'a, 'ra, 'tcx> {
             | AssocItemKind::Fn(box Fn { ident, .. })
             | AssocItemKind::Delegation(box Delegation { ident, .. }) => (ident, ValueNS),
 
-            AssocItemKind::Type(box TyAlias { ident, .. }) => (ident, TypeNS),
+            AssocItemKind::TraitAlias(box TraitAlias { ident, .. })
+            | AssocItemKind::Type(box TyAlias { ident, .. }) => (ident, TypeNS),
 
             AssocItemKind::MacCall(_) => {
                 match ctxt {

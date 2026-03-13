@@ -1,0 +1,17 @@
+error[E0599]: no method named `as_ref` found for type parameter `impl Borrower::Ref<'static>` in the current scope
+  --> $DIR/projected-missing-supertrait-bound.rs:13:19
+   |
+LL | fn show<B: Borrower>(value: impl <B as Borrower>::Ref<'static>) {
+   |                             ---------------------------------- method `as_ref` not found for this type parameter
+LL |     let _ = value.as_ref();
+   |                   ^^^^^^ method not found in `impl Borrower::Ref<'static>`
+   |
+   = help: items from traits can only be used if the type parameter is bounded by the trait
+help: the following trait defines an item `as_ref`, perhaps you need to restrict type parameter `impl Borrower::Ref<'static>` with it:
+   |
+LL | fn show<B: Borrower>(value: impl <B as Borrower>::Ref<'static> + AsRef</* T */>) {
+   |                                                                ++++++++++++++++
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

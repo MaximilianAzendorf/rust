@@ -1573,7 +1573,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         }
 
                         // This was an attempt to use a type parameter outside its scope.
+                        //
+                        // `Self` in impl methods resolves to `SelfTyAlias` and is allowed to
+                        // reference associated items from the surrounding impl/trait context.
                         RibKind::Item(has_generic_params, def_kind) => {
+                            if matches!(res, Res::SelfTyAlias { .. }) {
+                                continue;
+                            }
                             (has_generic_params, def_kind)
                         }
                     };

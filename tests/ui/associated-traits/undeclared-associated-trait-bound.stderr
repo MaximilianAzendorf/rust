@@ -1,0 +1,9 @@
+error[E0576]: cannot find associated trait `Arg` in trait `Handler`
+  --> $DIR/undeclared-associated-trait-bound.rs:5:32
+   |
+LL |     fn handle(&self, arg: impl Self::Arg);
+   |                                ^^^^^^^^^ unknown associated trait
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0576`.

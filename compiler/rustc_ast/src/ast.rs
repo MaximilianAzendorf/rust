@@ -3757,6 +3757,7 @@ pub struct TraitAlias {
     pub constness: Const,
     pub ident: Ident,
     pub generics: Generics,
+    pub has_value: bool,
     #[visitable(extra = BoundKind::Bound)]
     pub bounds: GenericBounds,
 }
@@ -4146,6 +4147,8 @@ pub enum AssocItemKind {
     Const(Box<ConstItem>),
     /// An associated function.
     Fn(Box<Fn>),
+    /// An associated trait alias.
+    TraitAlias(Box<TraitAlias>),
     /// An associated type.
     Type(Box<TyAlias>),
     /// A macro expanding to associated items.
@@ -4161,6 +4164,7 @@ impl AssocItemKind {
         match *self {
             AssocItemKind::Const(box ConstItem { ident, .. })
             | AssocItemKind::Fn(box Fn { ident, .. })
+            | AssocItemKind::TraitAlias(box TraitAlias { ident, .. })
             | AssocItemKind::Type(box TyAlias { ident, .. })
             | AssocItemKind::Delegation(box Delegation { ident, .. }) => Some(ident),
 
@@ -4173,9 +4177,10 @@ impl AssocItemKind {
             Self::Const(box ConstItem { defaultness, .. })
             | Self::Fn(box Fn { defaultness, .. })
             | Self::Type(box TyAlias { defaultness, .. }) => defaultness,
-            Self::MacCall(..) | Self::Delegation(..) | Self::DelegationMac(..) => {
-                Defaultness::Implicit
-            }
+            Self::TraitAlias(..)
+            | Self::MacCall(..)
+            | Self::Delegation(..)
+            | Self::DelegationMac(..) => Defaultness::Implicit,
         }
     }
 }
@@ -4185,6 +4190,7 @@ impl From<AssocItemKind> for ItemKind {
         match assoc_item_kind {
             AssocItemKind::Const(item) => ItemKind::Const(item),
             AssocItemKind::Fn(fn_kind) => ItemKind::Fn(fn_kind),
+            AssocItemKind::TraitAlias(trait_alias_kind) => ItemKind::TraitAlias(trait_alias_kind),
             AssocItemKind::Type(ty_alias_kind) => ItemKind::TyAlias(ty_alias_kind),
             AssocItemKind::MacCall(a) => ItemKind::MacCall(a),
             AssocItemKind::Delegation(delegation) => ItemKind::Delegation(delegation),
@@ -4200,6 +4206,7 @@ impl TryFrom<ItemKind> for AssocItemKind {
         Ok(match item_kind {
             ItemKind::Const(item) => AssocItemKind::Const(item),
             ItemKind::Fn(fn_kind) => AssocItemKind::Fn(fn_kind),
+            ItemKind::TraitAlias(trait_alias_kind) => AssocItemKind::TraitAlias(trait_alias_kind),
             ItemKind::TyAlias(ty_kind) => AssocItemKind::Type(ty_kind),
             ItemKind::MacCall(a) => AssocItemKind::MacCall(a),
             ItemKind::Delegation(d) => AssocItemKind::Delegation(d),

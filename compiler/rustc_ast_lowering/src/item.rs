@@ -1,7 +1,7 @@
 use rustc_abi::ExternAbi;
 use rustc_ast::visit::AssocCtxt;
 use rustc_ast::*;
-use rustc_errors::{E0570, ErrorGuaranteed, struct_span_code_err};
+use rustc_errors::{E0404, E0570, ErrorGuaranteed, struct_span_code_err};
 use rustc_hir::attrs::{AttributeKind, EiiImplResolution};
 use rustc_hir::def::{DefKind, PerNS, Res};
 use rustc_hir::def_id::{CRATE_DEF_ID, LocalDefId};
@@ -540,7 +540,13 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 );
                 hir::ItemKind::Trait(constness, *is_auto, safety, ident, generics, bounds, items)
             }
-            ItemKind::TraitAlias(box TraitAlias { constness, ident, generics, bounds }) => {
+            ItemKind::TraitAlias(box TraitAlias {
+                constness,
+                ident,
+                generics,
+                has_value: _,
+                bounds,
+            }) => {
                 let constness = self.lower_constness(*constness);
                 let ident = self.lower_ident(*ident);
                 let (generics, bounds) = self.lower_generics(
@@ -1041,6 +1047,34 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     true,
                 )
             }
+            AssocItemKind::TraitAlias(box TraitAlias {
+                ident,
+                generics,
+                has_value,
+                bounds,
+                ..
+            }) => {
+                let (generics, kind) = self.lower_generics(
+                    generics,
+                    i.id,
+                    ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
+                    |this| {
+                        if !this.tcx.features().associated_traits() {
+                            return hir::TraitItemKind::Type(&[], None);
+                        }
+
+                        hir::TraitItemKind::Type(
+                            this.lower_param_bounds(
+                                bounds,
+                                RelaxedBoundPolicy::Allowed,
+                                ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
+                            ),
+                            None,
+                        )
+                    },
+                );
+                (*ident, generics, kind, *has_value)
+            }
             AssocItemKind::Type(box TyAlias {
                 ident,
                 generics,
@@ -1230,6 +1264,32 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
                 (*ident, (generics, hir::ImplItemKind::Fn(sig, body_id)))
             }
+            AssocItemKind::TraitAlias(box TraitAlias { ident, generics, bounds, .. }) => (
+                *ident,
+                self.lower_generics(
+                    generics,
+                    i.id,
+                    ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
+                    |this| {
+                        if !this.tcx.features().associated_traits() {
+                            let guar = this.dcx().has_errors().unwrap_or_else(|| {
+                                this.dcx().span_delayed_bug(
+                                    i.span,
+                                    "lowered gated associated trait impl item without prior error",
+                                )
+                            });
+                            let ty = this.arena.alloc(this.ty(i.span, hir::TyKind::Err(guar)));
+                            return hir::ImplItemKind::Type(ty);
+                        }
+
+                        // Lower associated trait impl items to a `dyn` trait object carrying
+                        // the aliased bounds so later type lowering can recover real predicates.
+                        hir::ImplItemKind::Type(
+                            this.lower_associated_trait_alias_ty(i.span, bounds),
+                        )
+                    },
+                ),
+            ),
             AssocItemKind::Type(box TyAlias {
                 ident, generics, after_where_clause, ty, ..
             }) => {
@@ -1327,6 +1387,83 @@ impl<'hir> LoweringContext<'_, 'hir> {
             }
             Defaultness::Final(sp) => (hir::Defaultness::Final, Some(self.lower_span(sp))),
         }
+    }
+
+    fn lower_associated_trait_alias_ty(
+        &mut self,
+        span: Span,
+        bounds: &[GenericBound],
+    ) -> &'hir hir::Ty<'hir> {
+        let mut lifetime_bound = None;
+        let mut first_error = None;
+        let bounds = self.with_dyn_type_scope(true, |this| {
+            this.arena.alloc_from_iter(bounds.iter().filter_map(|bound| match bound {
+                GenericBound::Trait(trait_ref) => {
+                    let lowered = this.lower_poly_trait_ref(
+                        trait_ref,
+                        RelaxedBoundPolicy::Forbidden(RelaxedBoundForbiddenReason::TraitObjectTy),
+                        ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
+                    );
+                    if !matches!(
+                        lowered.trait_ref.path.res,
+                        Res::Def(DefKind::Trait | DefKind::TraitAlias | DefKind::AssocTy, _)
+                            | Res::Err
+                    ) {
+                        let mut err = struct_span_code_err!(
+                            this.dcx(),
+                            trait_ref.trait_ref.path.span,
+                            E0404,
+                            "expected trait, found type"
+                        );
+                        err.span_label(trait_ref.trait_ref.path.span, "not a trait");
+                        first_error.get_or_insert(err.emit());
+                        None
+                    } else if matches!(lowered.trait_ref.path.res, Res::Err) {
+                        first_error.get_or_insert_with(|| {
+                            this.dcx().has_errors().unwrap_or_else(|| {
+                                this.dcx().span_delayed_bug(
+                                    trait_ref.trait_ref.path.span,
+                                    "missing diagnostic for invalid associated trait alias bound",
+                                )
+                            })
+                        });
+                        None
+                    } else {
+                        Some(lowered)
+                    }
+                }
+                GenericBound::Outlives(lifetime) => {
+                    if lifetime_bound.is_none() {
+                        lifetime_bound = Some(this.lower_lifetime(
+                            lifetime,
+                            LifetimeSource::Other,
+                            lifetime.ident.into(),
+                        ));
+                    }
+                    None
+                }
+                GenericBound::Use(_, span) => {
+                    this.dcx()
+                        .span_delayed_bug(*span, "use<> not allowed in associated trait aliases");
+                    None
+                }
+            }))
+        });
+        if let Some(guar) = first_error {
+            return self.arena.alloc(self.ty(span, hir::TyKind::Err(guar)));
+        }
+        let lifetime_bound = lifetime_bound.unwrap_or_else(|| self.elided_dyn_bound(span));
+        self.arena.alloc(hir::Ty {
+            kind: hir::TyKind::TraitObject(
+                bounds,
+                rustc_data_structures::tagged_ptr::TaggedRef::new(
+                    lifetime_bound,
+                    TraitObjectSyntax::Dyn,
+                ),
+            ),
+            span: self.lower_span(span),
+            hir_id: self.next_id(),
+        })
     }
 
     fn record_body(
